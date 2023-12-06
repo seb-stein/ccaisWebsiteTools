@@ -4,8 +4,9 @@ import logging
 import requests
 import re
 import sys
+import json
 
-NUM_PROCESSES = 8
+NUM_PROCESSES = 1
 PROJECT_ID = "520617"
 PURE_PROJECT_UUID = "f7c56fc0-6c66-4e55-95c7-918bbf351b9f"
 BASE_URL = "https://api-pure.soton.ac.uk"
@@ -18,6 +19,9 @@ class Publication:
         self.AUTHOR_NAME_FORMAT = "{firstname} {lastname}"
         self.URL_REGEX = r"(https?:.*?)\""
         self.DOI_LINK_DISPLAY_REGEX = r"https?://doi.org/(.*)"
+        self.T2_REGEX = r"T2\s\s\-\s(.*)\r\n"
+        self.JO_REGEX = r"JO\s\s\-\s(.*)\r\n"
+        self.BT_REGEX = r"BT\s\s\-\s(.*)\r\n"
 
         self.pure_id = pure_id
         self.details = details
@@ -25,10 +29,20 @@ class Publication:
         self.link_display = ""
 
         self.title = details['title']
+        #print(self.title, " -> ", details['persons'])
         self.authors = self._format_authors(details['persons'])
         self.first_author = details['persons'][0]['lastname']
         self.year = details['year']
         self.harvard = details['harvard']
+        #print("\n\n" , details , "\n")
+        print(details['ris'])
+        match = re.search(self.T2_REGEX,details['ris'])
+        if match is None:
+            match = re.search(self.JO_REGEX, details['ris'])
+        if match is None:
+            match = re.search(self.BT_REGEX, details['ris'])
+
+        print('match='+match.groups()[0])
 
         self.add_link(details['harvard'], details['doi'])
         self.description = ""
@@ -38,7 +52,9 @@ class Publication:
     def _format_authors(self, persons: List[Dict[str, str]]) -> str:
         """Extract authors and add their name to the authors string in "Firstname Lastname" format."""
         authors = [self.AUTHOR_NAME_FORMAT.format(firstname=x['firstname'], lastname=x['lastname'])
-                   if x['role'] == "Author" else None for x in persons]
+                   if (x['role'] == "Author" or x['role'] == "Editor" ) else None for x in persons]
+        print(persons)
+        print("authors:", authors)
         return ", ".join(authors)
 
     def add_link_from_doi(self, doi: str):
@@ -93,6 +109,11 @@ class Publication:
         pub_str += "    display: " + self.link_display + "\n"
         return pub_str
 
+    def __data__(self):
+        data = {
+            "Year" : self.year,
+            "Venue" : ""
+        }
 
 def rest_get(base_url: str, endpoint: str, query: str) -> Optional[Dict[str, Any]]:
     """Execute GET request and return the json content."""
@@ -124,6 +145,7 @@ def get_publication_ids() -> Optional[List[str]]:
 def enrich_publication(pure_id: str) -> Optional[Publication]:
     """Create a publication from the specified Pure ID."""
     publication_details = rest_get(BASE_URL, ".", "outputs?limit=1&offset=0&guids=" + pure_id)
+    print(publication_details)
     if publication_details is None:
         logging.error("Could not retrieve details for publication with Pure ID: %s", pure_id)
         return None
@@ -147,6 +169,7 @@ def main(output_path: Optional[str] = None) -> int:
     first author. Returns 0 if the update completed successfully, or 1 if the update was aborted."""
     logging.info("Starting publications update.")
     publication_ids = get_publication_ids()
+    print(publication_ids)
     if publication_ids is None:
         logging.error("No publication list retrieved. Is the Pure API available? Update aborted.")
         return 1
