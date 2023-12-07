@@ -6,17 +6,17 @@ import re
 import sys
 import json
 
-NUM_PROCESSES = 1
+NUM_PROCESSES = 8
 PROJECT_ID = "520617"
 PURE_PROJECT_UUID = "f7c56fc0-6c66-4e55-95c7-918bbf351b9f"
 BASE_URL = "https://api-pure.soton.ac.uk"
-
+BASE_EPRINTS_URL = "https://eprints.soton.ac.uk/cgi/eprintbypureuuid?uuid="
 
 class Publication:
     def __init__(self, pure_id: str, details: Dict[str, Any]):
         """Create publication from supplied details."""
         self.NO_DOI_LINK_DISPLAY = "Read more"
-        self.AUTHOR_NAME_FORMAT = "{firstname} {lastname}"
+        self.AUTHOR_NAME_FORMAT = "{lastname}, {firstname}"
         self.URL_REGEX = r"(https?:.*?)\""
         self.DOI_LINK_DISPLAY_REGEX = r"https?://doi.org/(.*)"
         self.T2_REGEX = r"T2\s\s\-\s(.*)\r\n"
@@ -27,6 +27,9 @@ class Publication:
         self.details = details
         self.link_url = ""
         self.link_display = ""
+        self.doi_link_url = ""
+        self.doi_link_display = ""
+        self.eprints_link = BASE_EPRINTS_URL + pure_id
 
         self.title = details['title']
         #print(self.title, " -> ", details['persons'])
@@ -34,27 +37,38 @@ class Publication:
         self.first_author = details['persons'][0]['lastname']
         self.year = details['year']
         self.harvard = details['harvard']
+        self.abstract = details['abstract']
+
         #print("\n\n" , details , "\n")
-        print(details['ris'])
+        #print(details['ris'])
         match = re.search(self.T2_REGEX,details['ris'])
         if match is None:
             match = re.search(self.JO_REGEX, details['ris'])
         if match is None:
             match = re.search(self.BT_REGEX, details['ris'])
-
-        print('match='+match.groups()[0])
-
+        if match is None or len(match.groups()) == 0:
+            logging.warning("Unknown venue for Pure ID: %s", pure_id)
+            self.venue = "Unknown"
+        else:
+            self.venue = match.groups()[0]
+        #print(details['doi'])
+        if details['doi']:
+            self.add_link_from_doi(details['doi'])
         self.add_link(details['harvard'], details['doi'])
         self.description = ""
         if not (self.title and self.authors and self.link_url):
             logging.warning("Unknown details for Pure ID: %s", pure_id)
 
+        self.__make_data__()
+        #print(self.data)
+
     def _format_authors(self, persons: List[Dict[str, str]]) -> str:
         """Extract authors and add their name to the authors string in "Firstname Lastname" format."""
         authors = [self.AUTHOR_NAME_FORMAT.format(firstname=x['firstname'], lastname=x['lastname'])
                    if (x['role'] == "Author" or x['role'] == "Editor" ) else None for x in persons]
-        print(persons)
-        print("authors:", authors)
+        #print(persons)
+        #print("authors:", authors)
+        self.author_list = authors
         return ", ".join(authors)
 
     def add_link_from_doi(self, doi: str):
@@ -65,8 +79,8 @@ class Publication:
             return
         if 1 < len(doi_number):
             logging.warning("Too many display options for DOI %s for Pure ID %s: %s", doi, self.pure_id, doi_number)
-        self.link_url = doi
-        self.link_display = doi_number[0]
+        self.doi_link_url = doi
+        self.doi_link_display = doi_number[0]
 
     def add_link(self, harvard: str, doi: str):
         """Extract eprints URL from Harvard text. If none found, use the DOI or the first URL in the Harvard text."""
@@ -74,7 +88,8 @@ class Publication:
         if len(urls) == 0:
             if doi:
                 logging.warning("No URLs found in Harvard text, using DOI backup, for Pure ID: %s", self.pure_id)
-                self.add_link_from_doi(doi)
+                self.link_url = self.doi_link_url
+                self.link_display = self.doi_link_display
             else:
                 logging.warning("No URLs found for Pure ID: %s", self.pure_id)
             return
@@ -84,7 +99,8 @@ class Publication:
             logging.warning("Too many eprints URLs found for Pure ID %s: %s", self.pure_id, len(eprints_urls))
         elif 0 == len(eprints_urls):
             if doi:
-                self.add_link_from_doi(doi)
+                self.link_url = self.doi_link_url
+                self.link_display = self.doi_link_display
                 return
             if 1 <= len(urls):
                 logging.warning("No eprints URLs found for Pure ID %s, using URL: %s", self.pure_id, urls[0])
@@ -109,11 +125,22 @@ class Publication:
         pub_str += "    display: " + self.link_display + "\n"
         return pub_str
 
-    def __data__(self):
-        data = {
+    def __make_data__(self):
+        self.data = {
+            "Authors": self.author_list,
+            "Title" : self.title,
             "Year" : self.year,
-            "Venue" : ""
+            "Venue" : self.venue,
+            "URL" : self.eprints_link
         }
+        if self.doi_link_url:
+            self.data["DOI"] = self.doi_link_display
+            self.data["DOI_URL"] = self.doi_link_url
+
+        if self.abstract:
+            self.data["Abstract"] = self.abstract
+
+
 
 def rest_get(base_url: str, endpoint: str, query: str) -> Optional[Dict[str, Any]]:
     """Execute GET request and return the json content."""
@@ -184,6 +211,9 @@ def main(output_path: Optional[str] = None) -> int:
     else:
         for p in publications:
             print(p)
+
+    print(json.dumps([p.data for p in publications]))
+
     logging.info("Update complete. %s publications found.", len(publications))
     return 0
 
